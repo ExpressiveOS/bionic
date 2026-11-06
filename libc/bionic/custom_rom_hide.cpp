@@ -92,6 +92,7 @@ static const PrefixEntry kOverlayDirs[] = {
 
 static const PrefixEntry kRomArtifactPrefixes[] = {
     PE("org.evolution."),
+    PE("org.expressiveos."),
     PE("org.lineageos."),
     PE("org.libremobileos."),
     PE("com.crdroid."),
@@ -107,6 +108,7 @@ static const PrefixEntry kRomArtifactPrefixes[] = {
 
 static const PrefixEntry kProcFilterKeywords[] = {
     PE("lineage"), PE("Lineage"), PE("evolution"), PE("Evolution"),
+    PE("expressiveos"), PE("ExpressiveOS"),
     PE("omnirom"), PE("aospa"),
     { nullptr, 0 }
 };
