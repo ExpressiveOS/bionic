@@ -91,13 +91,11 @@ static const PrefixEntry kOverlayDirs[] = {
 };
 
 static const PrefixEntry kRomArtifactPrefixes[] = {
-    PE("org.evolution."),
     PE("org.expressiveos."),
-    PE("org.lineageos."),
+    PE("vendor.expressiveos."),
+    PE("eos-"),
     PE("org.libremobileos."),
     PE("com.crdroid."),
-    PE("lineage-sdk"),
-    PE("lineagesettings"),
     PE("co.aospa."),
     PE("com.android.axion."),
     PE("org.lunaris."),
@@ -107,8 +105,8 @@ static const PrefixEntry kRomArtifactPrefixes[] = {
 };
 
 static const PrefixEntry kProcFilterKeywords[] = {
-    PE("lineage"), PE("Lineage"), PE("evolution"), PE("Evolution"),
     PE("expressiveos"), PE("ExpressiveOS"),
+    PE("hal_eos_"), PE("eos_integrity"),
     PE("omnirom"), PE("aospa"),
     { nullptr, 0 }
 };
@@ -134,7 +132,7 @@ static const char* const kMountFilterKeywords[] = {
 };
 
 static const char* const kAllowlistedPackages[] = {
-    "org.lineageos.updater",
+    "org.expressiveos.updater",
     nullptr
 };
 
@@ -857,6 +855,7 @@ static const char* const kVintfFilterPaths[] = {
     "/system/etc/vintf/compatibility_matrix.xml", "/system/etc/vintf/compatibility_matrix.device.xml",
     "/vendor/etc/vintf/compatibility_matrix.xml", "/vendor/etc/vintf/compatibility_matrix.device.xml",
     "/product/etc/vintf/compatibility_matrix.xml", "/product/etc/vintf/compatibility_matrix.device.xml",
+    "/product/etc/vintf/compatibility_matrix.eos.xml",
     "/system_ext/etc/vintf/compatibility_matrix.xml", "/system_ext/etc/vintf/compatibility_matrix.device.xml",
     "/odm/etc/vintf/compatibility_matrix.xml", "/odm/etc/vintf/compatibility_matrix.device.xml",
     "/system/etc/vintf/manifest.xml", "/vendor/etc/vintf/manifest.xml", "/product/etc/vintf/manifest.xml",
@@ -864,7 +863,7 @@ static const char* const kVintfFilterPaths[] = {
 };
 
 static const char* const kVintfFilterKeywords[] = {
-    "lineage", "Lineage", "evolution", "Evolution", nullptr
+    "expressiveos", "ExpressiveOS", nullptr
 };
 #endif
 
@@ -916,8 +915,8 @@ int custom_rom_hide_filter_vintf(const char* path) {
 
 static const char* const kSpoofedEmptyProps[] = {
     "ro.expressiveos.version", "ro.expressiveos.build.version", "ro.expressiveos.display.version",
-    "ro.evolution.version", "ro.evolution.build.version", "ro.evolution.display.version",
-    "ro.lineage.version", "ro.lineage.build.version", "ro.cm.build.version",
+    "ro.expressiveos.device", "ro.expressiveos.releasetype",
+    "ro.expressiveos.build.date", "ro.expressiveos.build.date.utc",
     "ro.modversion", "init.svc_debug_pid.adb_root",
     "init.svc.adb_root", "service.adb.root", nullptr
 };
