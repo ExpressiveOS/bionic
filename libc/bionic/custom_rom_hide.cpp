@@ -745,13 +745,62 @@ static const MountDm kMountDm[] = {
     { nullptr,         nullptr },
 };
 
-static void write_spoofed_mount_line(int mem_fd, char* line, size_t line_len, void*) {
-    char* rw_delim = strstr(line, ",rw,");
-    if (rw_delim) { rw_delim[1] = 'r'; rw_delim[2] = 'o'; }
-    rw_delim = strstr(line, " rw,");
-    if (rw_delim) { rw_delim[1] = 'r'; rw_delim[2] = 'o'; }
-    rw_delim = strstr(line, ",rw ");
-    if (rw_delim) { rw_delim[1] = 'r'; rw_delim[2] = 'o'; }
+static bool is_readonly_os_mount(const char* mnt, size_t mnt_len) {
+    if (mnt_len == 1 && mnt[0] == '/') return true;
+    static const char* const kReadOnlyPrefixes[] = {
+        "/system",
+        "/vendor",
+        "/product",
+        "/system_ext",
+        "/odm",
+        "/apex",
+        nullptr,
+    };
+    for (const char* const* p = kReadOnlyPrefixes; *p; ++p) {
+        size_t plen = strlen(*p);
+        if (mnt_len >= plen && memcmp(mnt, *p, plen) == 0 &&
+            (mnt_len == plen || mnt[plen] == '/')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool extract_mountpoint_field(const char* line, size_t field_idx,
+                                     const char** out_start, size_t* out_len) {
+    const char* p = line;
+    for (size_t idx = 0; idx < field_idx; ++idx) {
+        while (*p && *p != ' ' && *p != '\t') ++p;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (!*p || *p == '\n') return false;
+    }
+    const char* start = p;
+    while (*p && *p != ' ' && *p != '\t' && *p != '\n') ++p;
+    if (p == start) return false;
+    *out_start = start;
+    *out_len = static_cast<size_t>(p - start);
+    return true;
+}
+
+static void rewrite_rw_options_in_place(char* start) {
+    for (char* p = start; *p; ++p) {
+        if ((p[0] == ',' || p[0] == ' ') && p[1] == 'r' && p[2] == 'w' &&
+            (p[3] == ',' || p[3] == ' ' || p[3] == '\n' || p[3] == '\0')) {
+            p[2] = 'o';
+        }
+    }
+}
+
+static void write_spoofed_mount_line(int mem_fd, char* line, size_t line_len, void* ctx) {
+    const ProcFilterType type = ctx ? *static_cast<ProcFilterType*>(ctx) : PROC_FILTER_MOUNTS;
+    const size_t mnt_field = (type == PROC_FILTER_MOUNTINFO) ? 4 : 1;
+    const char* mnt_start = nullptr;
+    size_t mnt_len = 0;
+    if (extract_mountpoint_field(line, mnt_field, &mnt_start, &mnt_len) &&
+        is_readonly_os_mount(mnt_start, mnt_len)) {
+        // Rewrite rw -> ro only after the mountpoint field, strictly on read-only OS partitions.
+        rewrite_rw_options_in_place(line + (mnt_start - line) + mnt_len);
+    }
 
     if (!strstr(line, "/dev/block/loop")) {
         const char* replacement = nullptr;
