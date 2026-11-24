@@ -313,7 +313,7 @@ sched_setscheduler(pid_t, int, const sched_param*)  all
 sched_yield(void) all
 
 # other
-uname(struct utsname*)  all
+__uname:uname(struct utsname*)  all
 umask(mode_t)  all
 __reboot:reboot(int, int, int, void*)  all
 init_module(void*, unsigned long, const char*)  all
