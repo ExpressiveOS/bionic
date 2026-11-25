@@ -30,6 +30,7 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #include <sys/sysmacros.h>
 #include <sys/system_properties.h>
 #include <unistd.h>
@@ -579,11 +580,14 @@ ssize_t custom_rom_hide_readlink_post(char* buf, size_t size, ssize_t ret) {
 enum ProcFilterType {
     PROC_FILTER_NONE, PROC_FILTER_MAPS, PROC_FILTER_MOUNTS,
     PROC_FILTER_MOUNTINFO, PROC_FILTER_FILESYSTEMS, PROC_FILTER_CMDLINE,
+    PROC_FILTER_VERSION, PROC_FILTER_OSRELEASE,
 };
 
 static ProcFilterType get_proc_filter_type(const char* path) {
     if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return PROC_FILTER_NONE;
     if (strcmp(path, "/proc/cmdline") == 0) return PROC_FILTER_CMDLINE;
+    if (strcmp(path, "/proc/version") == 0) return PROC_FILTER_VERSION;
+    if (strcmp(path, "/proc/sys/kernel/osrelease") == 0) return PROC_FILTER_OSRELEASE;
     if (strcmp(path, "/proc/filesystems") == 0) return PROC_FILTER_FILESYSTEMS;
     if (strncmp(path, "/proc/", 6) != 0) return PROC_FILTER_NONE;
 
@@ -786,6 +790,92 @@ static bool drop_proc_line(const char* line, void* ctx) {
     return should_filter_line(*static_cast<ProcFilterType*>(ctx), line);
 }
 
+static bool contains_ascii_case_insensitive(const char* haystack, const char* needle) {
+    if (!haystack || !needle || !*needle) return false;
+    size_t nlen = strlen(needle);
+    for (const char* p = haystack; *p; ++p) {
+        size_t i = 0;
+        for (; i < nlen && p[i]; ++i) {
+            char a = p[i];
+            char b = needle[i];
+            if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+            if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+            if (a != b) break;
+        }
+        if (i == nlen) return true;
+    }
+    return false;
+}
+
+static bool has_nonstandard_kernel_tag(const char* s) {
+    static const char* const kTags[] = {
+        "-wild", "bakasu", "sukisu", "kernelsu", "-ksu", "susfs",
+        "heybooboo", "-dirty", "expressiveos", "lineage", nullptr
+    };
+    for (const char* const* t = kTags; *t; ++t) {
+        if (contains_ascii_case_insensitive(s, *t)) return true;
+    }
+    return false;
+}
+
+static uint64_t fnv1a64_str(uint64_t h, const char* s) {
+    if (!s) return h;
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(s); *p; ++p) {
+        h ^= *p;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static bool normalize_gki_release_str(const char* in, char* out, size_t out_size) {
+    if (!in || !out || out_size < 32) return false;
+    if (!has_nonstandard_kernel_tag(in)) return false;
+
+    const char* android_pos = strstr(in, "-android");
+    size_t prefix_len = 0;
+    if (android_pos != nullptr) {
+        const char* p = android_pos + 8;
+        while (*p >= '0' && *p <= '9') ++p;
+        prefix_len = static_cast<size_t>(p - in);
+    } else {
+        const char* dash = strchr(in, '-');
+        prefix_len = dash ? static_cast<size_t>(dash - in) : strlen(in);
+    }
+    if (prefix_len == 0 || prefix_len > 28) return false;
+
+    const char* page_suffix = "";
+    size_t in_len = strlen(in);
+    if (in_len > 3 && strcmp(in + in_len - 3, "-4k") == 0) page_suffix = "-4k";
+    else if (in_len > 4 && strcmp(in + in_len - 4, "-16k") == 0) page_suffix = "-16k";
+
+    char incr[PROP_VALUE_MAX] = {};
+    __system_property_get("ro.build.version.incremental", incr);
+    uint64_t seed = fnv1a64_str(14695981039346656037ULL, in);
+    seed = fnv1a64_str(seed, incr);
+    unsigned int sub = static_cast<unsigned int>((seed % 9ULL) + 1ULL);
+    unsigned long long g_hash = static_cast<unsigned long long>(seed & 0xffffffffffffULL);
+    unsigned int ab_num = 16000000U + static_cast<unsigned int>((seed >> 16) % 999999U);
+
+    char prefix[32];
+    memcpy(prefix, in, prefix_len);
+    prefix[prefix_len] = '\0';
+
+    int n = snprintf(out, out_size, "%s-%u-g%012llx-ab%08u%s",
+                     prefix, sub, g_hash, ab_num, page_suffix);
+    return n > 0 && static_cast<size_t>(n) < out_size;
+}
+
+static void normalize_uts_version_str(char* version, size_t version_size) {
+    if (!version || version_size < 32) return;
+    if (!has_nonstandard_kernel_tag(version)) return;
+    char build_date[PROP_VALUE_MAX] = {};
+    if (__system_property_get("ro.build.date", build_date) > 0) {
+        snprintf(version, version_size, "#1 SMP PREEMPT %s", build_date);
+    } else {
+        snprintf(version, version_size, "#1 SMP PREEMPT UTC 2026");
+    }
+}
+
 int custom_rom_hide_filter_proc(const char* path) {
     if (!is_app_process()) return -1;
     if (!path || reinterpret_cast<uintptr_t>(path) < 0x1000000) return -1;
@@ -793,6 +883,53 @@ int custom_rom_hide_filter_proc(const char* path) {
     int saved_errno = errno;
     ProcFilterType type = get_proc_filter_type(path);
     if (type == PROC_FILTER_NONE) { errno = saved_errno; return -1; }
+
+    if (type == PROC_FILTER_OSRELEASE || type == PROC_FILTER_VERSION) {
+        size_t fsize = 0;
+        char* raw = read_file_raw(path, &fsize);
+        if (!raw) { errno = saved_errno; return -1; }
+        int mem_fd = create_encoded_memfd(path);
+        if (mem_fd < 0) { free(raw); errno = saved_errno; return -1; }
+
+        if (type == PROC_FILTER_OSRELEASE) {
+            char clean_rel[65] = {};
+            size_t rlen = strcspn(raw, "\r\n");
+            raw[rlen] = '\0';
+            if (normalize_gki_release_str(raw, clean_rel, sizeof(clean_rel))) {
+                raw_write(mem_fd, clean_rel, strlen(clean_rel));
+                raw_write(mem_fd, "\n", 1);
+            } else {
+                raw_write(mem_fd, raw, strlen(raw));
+                raw_write(mem_fd, "\n", 1);
+            }
+        } else {
+            const char* kPrefix = "Linux version ";
+            if (strncmp(raw, kPrefix, strlen(kPrefix)) == 0) {
+                const char* rel_start = raw + strlen(kPrefix);
+                const char* rel_end = strchr(rel_start, ' ');
+                if (rel_end != nullptr && static_cast<size_t>(rel_end - rel_start) < 65) {
+                    char orig_rel[65] = {};
+                    char clean_rel[65] = {};
+                    memcpy(orig_rel, rel_start, static_cast<size_t>(rel_end - rel_start));
+                    if (normalize_gki_release_str(orig_rel, clean_rel, sizeof(clean_rel))) {
+                        raw_write(mem_fd, kPrefix, strlen(kPrefix));
+                        raw_write(mem_fd, clean_rel, strlen(clean_rel));
+                        raw_write(mem_fd, rel_end, strlen(rel_end));
+                    } else {
+                        raw_write(mem_fd, raw, fsize);
+                    }
+                } else {
+                    raw_write(mem_fd, raw, fsize);
+                }
+            } else {
+                raw_write(mem_fd, raw, fsize);
+            }
+        }
+        free(raw);
+        raw_lseek(mem_fd, 0, SEEK_SET);
+        errno = saved_errno;
+        return mem_fd;
+    }
 
     if (type != PROC_FILTER_CMDLINE) {
         LineWriter writer = (type == PROC_FILTER_MOUNTS || type == PROC_FILTER_MOUNTINFO)
@@ -916,10 +1053,16 @@ int custom_rom_hide_filter_vintf(const char* path) {
 
 static const char* const kSpoofedEmptyProps[] = {
     "ro.expressiveos.version", "ro.expressiveos.build.version", "ro.expressiveos.display.version",
+    "ro.expressiveos.device", "ro.expressiveos.releasetype",
+    "ro.expressiveos.build.date", "ro.expressiveos.build.date.utc",
     "ro.evolution.version", "ro.evolution.build.version", "ro.evolution.display.version",
     "ro.lineage.version", "ro.lineage.build.version", "ro.cm.build.version",
     "ro.modversion", "init.svc_debug_pid.adb_root",
-    "init.svc.adb_root", "service.adb.root", nullptr
+    "init.svc.adb_root", "service.adb.root",
+    "service.adb.tcp.port", "persist.adb.wifi.guid",
+    "ro.boot.verifiedbooterror", "ro.boot.verifyerrorpart",
+    "vendor.boot.verifiedbooterror", "vendor.boot.verifyerrorpart",
+    "crashrecovery.rescue_boot_count", "sys.oem_unlock_allowed", nullptr
 };
 
 struct PropOverride { const char* name; const char* value; };
@@ -943,6 +1086,14 @@ static const PropOverride kSpoofedValueProps[] = {
     {"ro.boot.flash.locked", "1"},
     {"ro.boot.veritymode", "enforcing"},
     {"ro.secureboot.lockstate", "locked"},
+    {"ro.boot.vbmeta.hash_alg", "sha256"},
+    {"ro.boot.vbmeta.invalidate_on_error", "yes"},
+    {"ro.boot.warranty_bit", "0"},
+    {"ro.warranty_bit", "0"},
+    {"ro.vendor.boot.warranty_bit", "0"},
+    {"ro.vendor.warranty_bit", "0"},
+    {"ro.is_ever_orange", "0"},
+    {"ro.oem_unlock_supported", "0"},
     {nullptr, nullptr}
 };
 
@@ -1272,5 +1423,17 @@ void custom_rom_hide_spoof_fd_statfs(int fd, struct statfs* sf) {
         }
     }
     normalize_statfs_type(sf);
+    errno = saved_errno;
+}
+
+void custom_rom_hide_normalize_utsname(struct utsname* buf) {
+    if (!buf || !is_app_process()) return;
+    int saved_errno = errno;
+    char clean_rel[sizeof(buf->release)] = {};
+    if (normalize_gki_release_str(buf->release, clean_rel, sizeof(clean_rel))) {
+        strncpy(buf->release, clean_rel, sizeof(buf->release) - 1);
+        buf->release[sizeof(buf->release) - 1] = '\0';
+    }
+    normalize_uts_version_str(buf->version, sizeof(buf->version));
     errno = saved_errno;
 }

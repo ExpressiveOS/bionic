@@ -1078,6 +1078,7 @@ cc_library_static {
         "bionic/sys_shm.cpp",
         "bionic/sys_signalfd.cpp",
         "bionic/sys_statfs.cpp",
+        "bionic/uname.cpp",
         "bionic/sys_statvfs.cpp",
         "bionic/sys_thread_properties.cpp",
         "bionic/sys_time.cpp",
